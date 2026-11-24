@@ -1,0 +1,10 @@
+# The virtual environment can always be rebuilt from requirements.txt.
+.venv/
+
+# Python creates these caches automatically when it runs your code.
+__pycache__/
+*.pyc
+
+# Trained models and training logs get large. We will keep them out of git.
+runs/
+*.pt
