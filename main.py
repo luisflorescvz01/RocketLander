@@ -12,6 +12,9 @@ GROUND_COLOR = (90, 100, 105)
 ROCKET_COLOR = (240, 180, 50)
 FLAME_COLOR = (255, 120, 30)
 TEXT_COLOR = (30, 40, 45)
+WRECK_COLOR = (110, 60, 50)              # NEW
+LANDED_COLOR = (20, 120, 80)             # NEW
+CRASHED_COLOR = (180, 50, 40)            # NEW
 
 # --- Physics (all in meters, seconds, and "up is positive") ---------------
 DT = 1 / FPS                 # Time step: seconds simulated per frame.
@@ -28,6 +31,9 @@ MAX_THRUST = 2200.0          # Engine force at 100% throttle, newtons.
 MAX_FUEL_FLOW = 1.375        # Fuel burned per second at 100% throttle, kg/s.
 THROTTLE_RATE = 0.5          # How fast W/S move the throttle, per second.
 
+# --- Rules -----------------------------------------------------------------  NEW
+SAFE_SPEED = 5.0             # Touch down slower than this to land, m/s.      NEW
+
 
 class Rocket:                                                               # NEW
     """Everything we need to know about the rocket right now, in one place."""
@@ -37,7 +43,7 @@ class Rocket:                                                               # NE
         self.y = START_HEIGHT     # Height of the rocket's bottom above the ground, m.
         self.vy = 0.0             # Vertical velocity, m/s (negative = falling).
         self.time = 0.0           # Simulated seconds since the start.
-        self.on_ground = False
+        self.status = "flying"    # NEW: "flying", "landed" or "crashed".
         self.impact_speed = None  # Speed at the moment it hits the ground.
         self.throttle = 0.0       # Engine setting, 0.0 (off) to 1.0 (full).
         self.fuel = START_FUEL    # kg left in the tank.
@@ -54,6 +60,7 @@ def main():
     pygame.display.set_caption("RocketLander")
     clock = pygame.time.Clock()                       # Keeps the loop at a steady speed.
     font = pygame.font.SysFont("consolas", 18)        # For the on-screen numbers.
+    big_font = pygame.font.SysFont("consolas", 48, bold=True)  # NEW: for LANDED / CRASHED.
 
     rocket = Rocket()    # NEW: replaces the seven separate state variables.
 
@@ -65,6 +72,8 @@ def main():
                 running = False
             elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
                 running = False
+            elif event.type == pygame.KEYDOWN and event.key == pygame.K_r:
+                rocket = Rocket()                     # NEW: restart = a brand-new rocket.
 
         # Held keys. Events say "W was pressed"; get_pressed() says "W is down now".
         keys = pygame.key.get_pressed()
@@ -75,7 +84,7 @@ def main():
         rocket.throttle = min(1.0, max(0.0, rocket.throttle))  # Keep it between 0 and 1.
 
         # 2. Update the game state: one physics step of DT seconds.
-        if rocket.on_ground:
+        if rocket.status != "flying":                # NEW: was "if rocket.on_ground:".
             rocket.throttle = 0.0                     # Engine off once down.
         else:
             # The engine only pushes while there is fuel left.
@@ -91,7 +100,11 @@ def main():
                 rocket.impact_speed = abs(rocket.vy)
                 rocket.y = 0.0
                 rocket.vy = 0.0
-                rocket.on_ground = True
+                # NEW: the rule that decides the outcome of the flight.
+                if rocket.impact_speed < SAFE_SPEED:
+                    rocket.status = "landed"
+                else:
+                    rocket.status = "crashed"
 
         # 3. Draw: paint everything again, back to front.
         screen.fill(SKY_COLOR)
@@ -113,7 +126,8 @@ def main():
                 (center + width_px / 3, bottom),
                 (center, bottom + flame_length),
             ])
-        pygame.draw.rect(screen, ROCKET_COLOR, (left, top, width_px, height_px))
+        body_color = WRECK_COLOR if rocket.status == "crashed" else ROCKET_COLOR   # NEW
+        pygame.draw.rect(screen, body_color, (left, top, width_px, height_px))
 
         # On-screen readout so we can check the physics.
         weight = (DRY_MASS + rocket.fuel) * GRAVITY
@@ -127,6 +141,16 @@ def main():
             lines.append(f"impact    {rocket.impact_speed:5.1f} m/s")
         for i, text in enumerate(lines):
             screen.blit(font.render(text, True, TEXT_COLOR), (15, 15 + i * 22))
+
+        # NEW: the result, centered on screen, once the flight is over.
+        if rocket.status != "flying":
+            title = "LANDED" if rocket.status == "landed" else "CRASHED"
+            color = LANDED_COLOR if rocket.status == "landed" else CRASHED_COLOR
+            message = big_font.render(title, True, color)
+            hint = font.render("Press R to restart", True, TEXT_COLOR)
+            # get_rect(center=...) positions an image by its middle instead of its corner.
+            screen.blit(message, message.get_rect(center=(WIDTH / 2, HEIGHT / 3)))
+            screen.blit(hint, hint.get_rect(center=(WIDTH / 2, HEIGHT / 3 + 45)))
 
         pygame.display.flip()                         # Show the finished frame.
 
