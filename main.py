@@ -40,7 +40,8 @@ GIMBAL_RATE = math.radians(30)   # NEW: how fast the nozzle swivels, per second.
 NOZZLE_ARM = ROCKET_HEIGHT / 2   # NEW: distance from the center down to the nozzle, m.
 
 # --- Rules -----------------------------------------------------------------
-SAFE_SPEED = 5.0             # Touch down slower than this to land, m/s.
+SAFE_SPEED = 5.0             # Touch down slower than this to land, m/s (now total speed).
+SAFE_ANGLE = math.radians(15)    # NEW: touch down within this tilt of upright.
 
 
 class Rocket:
@@ -58,6 +59,7 @@ class Rocket:
         self.time = 0.0           # Simulated seconds since the start.
         self.status = "flying"    # "flying", "landed" or "crashed".
         self.impact_speed = None  # Speed at the moment it hits the ground.
+        self.crash_reason = None  # NEW: why a touchdown counted as a crash, for the player.
         self.throttle = 0.0       # Engine setting, 0.0 (off) to 1.0 (full).
         self.fuel = START_FUEL    # kg left in the tank.
 
@@ -70,6 +72,10 @@ class Rocket:
         c, s = math.cos(self.angle), math.sin(self.angle)
         return (self.x + local_x * c + local_y * s,
                 self.y + local_y * c - local_x * s)
+
+    def tilt(self):                                                         # NEW
+        """The angle wrapped into -180°..+180°, so a full spin counts as upright again."""
+        return math.remainder(self.angle, math.tau)     # tau = 2π = one full turn.
 
     def corners(self):                                                      # NEW
         """The body's four corners in world coordinates, clockwise from bottom-left."""
@@ -158,16 +164,23 @@ def main():
             # NEW: touchdown happens at the lowest corner, not the middle of the bottom.
             lowest = min(corner[1] for corner in rocket.corners())
             if lowest <= 0:           # A corner reached (or passed) the ground this step.
-                rocket.impact_speed = abs(rocket.vy)
+                # NEW: total speed combines both directions (Pythagoras): √(vx² + vy²).
+                rocket.impact_speed = math.hypot(rocket.vx, rocket.vy)
                 rocket.y = rocket.y - lowest          # NEW: lift it so it rests on the ground.
                 rocket.vy = 0.0
                 rocket.vx = 0.0       # The ground stops the sideways drift too.
                 rocket.spin = 0.0     # NEW: ...and the spin.
-                # The rule that decides the outcome of the flight.
-                if rocket.impact_speed < SAFE_SPEED:
-                    rocket.status = "landed"
-                else:
+                # NEW: the rules that decide the outcome. Every rule must pass to land.
+                reasons = []
+                if rocket.impact_speed >= SAFE_SPEED:
+                    reasons.append("too fast")
+                if abs(rocket.tilt()) > SAFE_ANGLE:
+                    reasons.append("too tilted")
+                if reasons:
                     rocket.status = "crashed"
+                    rocket.crash_reason = " and ".join(reasons)
+                else:
+                    rocket.status = "landed"
 
         # 3. Draw: paint everything again, back to front.
         screen.fill(SKY_COLOR)
@@ -204,7 +217,7 @@ def main():
                  f"speed     {rocket.vy:+6.1f} m/s",
                  f"x         {rocket.x:+6.1f} m",
                  f"side spd  {rocket.vx:+6.1f} m/s",
-                 f"tilt      {math.degrees(rocket.angle):+6.1f} °",          # NEW
+                 f"tilt      {math.degrees(rocket.tilt()):+6.1f} °",         # NEW
                  f"spin      {math.degrees(rocket.spin):+6.1f} °/s",         # NEW
                  f"nozzle    {math.degrees(rocket.gimbal):+6.1f} °   (A / D)",  # NEW
                  f"throttle  {rocket.throttle:5.0%}   (W / S)",
@@ -220,7 +233,10 @@ def main():
             title = "LANDED" if rocket.status == "landed" else "CRASHED"
             color = LANDED_COLOR if rocket.status == "landed" else CRASHED_COLOR
             message = big_font.render(title, True, color)
-            hint = font.render("Press R to restart", True, TEXT_COLOR)
+            hint_text = "Press R to restart"
+            if rocket.crash_reason:                              # NEW: e.g. "Too fast · Press R..."
+                hint_text = f"{rocket.crash_reason.capitalize()} · {hint_text}"
+            hint = font.render(hint_text, True, TEXT_COLOR)
             # get_rect(center=...) positions an image by its middle instead of its corner.
             screen.blit(message, message.get_rect(center=(WIDTH / 2, HEIGHT / 3)))
             screen.blit(hint, hint.get_rect(center=(WIDTH / 2, HEIGHT / 3 + 45)))
