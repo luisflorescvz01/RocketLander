@@ -23,9 +23,18 @@ MAX_GIMBAL = math.radians(12)    # Furthest the nozzle can swivel, each way.
 GIMBAL_RATE = math.radians(30)   # How fast the nozzle swivels, per second.
 NOZZLE_ARM = ROCKET_HEIGHT / 2   # Distance from the center down to the nozzle, m.
 
+# --- Landing legs: a spring and a damper in each leg, and friction at each foot -----
+LEG_STIFFNESS = 5200.0       # Spring: N of push per m the foot is pressed into the ground.
+LEG_DAMPING = 670.0          # Damper: N of push per m/s the foot moves into the ground.
+FRICTION = 0.85              # A foot's sideways grip can be at most this fraction of its push.
+GRIP = 310.0                 # N of sideways resistance per m/s a loaded foot slides.
+
 # --- Rules -----------------------------------------------------------------
-SAFE_SPEED = 5.0             # Touch down slower than this to land, m/s (now total speed).
-SAFE_ANGLE = math.radians(15)    # Touch down within this tilt of upright.
+SAFE_SPEED = 5.0             # A foot touching down faster than this breaks its leg, m/s.
+SAFE_ANGLE = math.radians(15)    # To count as landed, stay within this tilt of upright.
+SETTLE_SPEED = 0.6           # ...moving slower than this, m/s...
+SETTLE_SPIN = math.radians(15)   # ...spinning slower than this...
+SETTLE_TIME = 0.3            # ...with both feet down, for this long in a row, s.
 PAD_X = 0.0                  # Center of the landing pad, m.
 PAD_WIDTH = 12.0             # The rocket's base must touch down within this width, m.
 
@@ -44,8 +53,10 @@ class Rocket:
         self.gimbal = 0.0         # Nozzle swivel in radians (+ = nozzle swung right).
         self.time = 0.0           # Simulated seconds since the start.
         self.status = "flying"    # "flying", "landed", "off_pad" or "crashed".
-        self.impact_speed = None  # Speed at the moment it hits the ground.
-        self.crash_reason = None  # Why a touchdown counted as a crash, for the player.
+        self.impact_speed = None  # Fastest a foot has hit the ground so far, m/s.
+        self.crash_reason = None  # Why the flight counted as a crash, for the player.
+        self.foot_contacts = [False, False]   # Is each foot [left, right] on the ground?
+        self.settle_time = 0.0    # How long it has been resting calmly on both feet, s.
         self.throttle = 0.0       # Engine setting, 0.0 (off) to 1.0 (full).
         self.fuel = START_FUEL    # kg left in the tank.
 
@@ -91,6 +102,14 @@ class Rocket:
         """Height of the lowest point (a foot or a body corner) above the ground, m."""
         return min(y for _, y in self.feet() + self.corners())
 
+    def point_velocity(self, point):
+        """How fast a point on the rocket is moving, m/s: the center's motion plus the spin's.
+
+        Spinning clockwise moves a point on the right side down and a point above up-right.
+        """
+        dx, dy = point[0] - self.x, point[1] - self.y
+        return (self.vx + self.spin * dy, self.vy - self.spin * dx)
+
     def step(self, throttle, gimbal_command):
         """Advance the rocket by one time step of DT seconds.
 
@@ -124,42 +143,80 @@ class Rocket:
 
         # Thrust points along the body, turned by the nozzle's swivel.
         direction = self.angle - self.gimbal
-        ax = thrust * math.sin(direction) / mass              # Sideways part.
-        ay = thrust * math.cos(direction) / mass - GRAVITY    # Upward part, minus gravity.
-
-        # Off-center thrust twists the rocket. Turning has its own a = F / m:
-        # angular acceleration = torque / moment of inertia.
+        force_x = thrust * math.sin(direction)                # Sideways part.
+        force_y = thrust * math.cos(direction) - mass * GRAVITY   # Upward part, minus weight.
+        # Off-center thrust twists the rocket.
         torque = thrust * math.sin(self.gimbal) * NOZZLE_ARM
+
+        # The ground pushes on any foot pressed into it. Add those forces and twists too.
+        ground_x, ground_y, ground_torque = self._ground_forces()
+        force_x = force_x + ground_x
+        force_y = force_y + ground_y
+        torque = torque + ground_torque
+
+        # a = F / m for moving, and angular acceleration = torque / inertia for turning.
         inertia = mass * (ROCKET_HEIGHT ** 2 + ROCKET_WIDTH ** 2) / 12
         self.spin = self.spin + torque / inertia * dt     # Torque changes the spin...
         self.angle = self.angle + self.spin * dt          # ...and spin changes the angle.
-
-        self.vx = self.vx + ax * dt            # Acceleration changes the velocity...
-        self.vy = self.vy + ay * dt
-        self.y = self.y + self.vy * dt         # ...and velocity changes the position.
+        self.vx = self.vx + force_x / mass * dt           # Force changes the velocity...
+        self.vy = self.vy + force_y / mass * dt
+        self.y = self.y + self.vy * dt                    # ...and velocity changes the position.
         self.x = self.x + self.vx * dt
         self.time = self.time + dt
 
-        # Touchdown happens at the lowest point: usually a foot, a body corner if badly tilted.
-        lowest = self.clearance()
-        if lowest <= 0:           # Something reached (or passed) the ground this step.
-            # Total speed combines both directions (Pythagoras): √(vx² + vy²).
-            self.impact_speed = math.hypot(self.vx, self.vy)
-            self.y = self.y - lowest              # Lift it so it rests on the ground.
-            self.vy = 0.0
-            self.vx = 0.0         # The ground stops the sideways drift too.
-            self.spin = 0.0       # ...and the spin.
-            # The rules that decide the outcome. Every rule must pass to land.
-            reasons = []
-            if self.impact_speed >= SAFE_SPEED:
-                reasons.append("too fast")
-            if abs(self.tilt()) > SAFE_ANGLE:
-                reasons.append("too tilted")
-            if reasons:
-                self.status = "crashed"
-                self.crash_reason = " and ".join(reasons)
-            # Only a safe touchdown gets asked "was it on the pad?".
-            elif abs(self.pad_offset()) > PAD_WIDTH / 2:
-                self.status = "off_pad"
-            else:
-                self.status = "landed"
+        self._judge(dt)
+
+    def _ground_forces(self):
+        """The ground's push on each foot below it: (sideways force, upward force, torque)."""
+        total_x = total_y = total_torque = 0.0
+        for foot in self.feet():
+            depth = -foot[1]                      # How far the foot is pressed into the ground.
+            if depth <= 0:
+                continue                          # Not touching: no force.
+            foot_vx, foot_vy = self.point_velocity(foot)
+            # Spring (deeper = harder) plus damper (moving down faster = harder).
+            # The ground can push but never pull, so the push is never below zero.
+            push = max(0.0, depth * LEG_STIFFNESS - foot_vy * LEG_DAMPING)
+            # Friction resists sliding, but can't grip harder than FRICTION x push.
+            limit = FRICTION * push
+            friction = min(limit, max(-limit, -foot_vx * GRIP))
+            total_x = total_x + friction
+            total_y = total_y + push
+            # A push away from the center twists the rocket, like the off-center thrust.
+            dx, dy = foot[0] - self.x, foot[1] - self.y
+            total_torque = total_torque + dy * friction - dx * push
+        return total_x, total_y, total_torque
+
+    def _judge(self, dt):
+        """Check the ground rules after moving: broken leg, body impact, or a calm landing."""
+        feet = self.feet()
+        for i, foot in enumerate(feet):
+            touching = foot[1] <= 0
+            if touching and not self.foot_contacts[i]:          # This foot just touched down.
+                speed = math.hypot(*self.point_velocity(foot))
+                self.impact_speed = max(self.impact_speed or 0.0, speed)
+                if speed > SAFE_SPEED:
+                    self._crash("a leg broke: it touched down too fast")
+                    return
+            self.foot_contacts[i] = touching
+
+        if any(y <= 0 for _, y in self.corners()):
+            self._crash("the body hit the ground")
+            return
+
+        # Landed = resting calmly on both feet for SETTLE_TIME in a row.
+        calm = (all(self.foot_contacts)
+                and math.hypot(self.vx, self.vy) <= SETTLE_SPEED
+                and abs(self.tilt()) <= SAFE_ANGLE
+                and abs(self.spin) <= SETTLE_SPIN)
+        self.settle_time = self.settle_time + dt if calm else 0.0
+        if self.settle_time >= SETTLE_TIME:
+            # Only a calm landing gets asked "was it on the pad?".
+            self.status = "off_pad" if abs(self.pad_offset()) > PAD_WIDTH / 2 else "landed"
+
+    def _crash(self, reason):
+        """End the flight as a crash. For now everything stops where it is."""
+        self.status = "crashed"
+        self.crash_reason = reason
+        self.y = self.y - min(0.0, self.clearance())  # Lift it so nothing is below the ground.
+        self.vx = self.vy = self.spin = 0.0

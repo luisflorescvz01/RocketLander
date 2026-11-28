@@ -6,7 +6,7 @@ import pytest
 
 from physics import (
     DT, GRAVITY, DRY_MASS, START_FUEL, MAX_THRUST, MAX_FUEL_FLOW,
-    MAX_GIMBAL, GIMBAL_RATE, Rocket,
+    MAX_GIMBAL, GIMBAL_RATE, LEG_STIFFNESS, SETTLE_TIME, Rocket,
 )
 
 
@@ -15,6 +15,16 @@ def still_rocket():
     rocket = Rocket()
     rocket.x = 0.0
     rocket.vx = 0.0
+    return rocket
+
+
+def placed_rocket(height, x=0.0, vx=0.0, angle_degrees=0.0):
+    """A rocket whose lowest point is `height` m above the ground, not moving down yet."""
+    rocket = still_rocket()
+    rocket.x = x
+    rocket.vx = vx
+    rocket.angle = math.radians(angle_degrees)
+    rocket.y = rocket.y - (rocket.clearance() - height)
     return rocket
 
 
@@ -154,6 +164,65 @@ def test_tilting_right_swings_the_stance_to_the_left():
     rocket.angle = math.radians(10)                        # Nose leans right...
     assert rocket.stance_center()[0] < 0                   # ...so the feet swing left.
     assert rocket.pad_offset() == pytest.approx(rocket.stance_center()[0])
+
+
+# --- Suspension and landing ---------------------------------------------------
+
+def test_a_gentle_drop_on_the_pad_settles_and_lands():
+    rocket = fly(placed_rocket(0.3), 0.0, 0.0, seconds=10)
+    assert rocket.status == "landed"
+
+
+def test_landing_waits_for_a_calm_moment_on_both_feet():
+    rocket = placed_rocket(0.3)
+    both_down_at = None
+    for _ in range(round(10 / DT)):        # At most 10 s, so a rocket that never settles
+        if rocket.status != "flying":      # fails this test instead of hanging it forever.
+            break
+        rocket.step(0.0, 0.0)
+        if both_down_at is None and all(rocket.foot_contacts):
+            both_down_at = rocket.time
+    assert rocket.status == "landed"
+    # Not landed the instant the feet touch, but only after SETTLE_TIME of calm.
+    assert rocket.time - both_down_at >= SETTLE_TIME - DT
+
+
+def test_the_legs_hold_the_weight_with_a_small_compression():
+    rocket = fly(placed_rocket(0.3), 0.0, 0.0, seconds=10)
+    weight = (DRY_MASS + rocket.fuel) * GRAVITY
+    compression = -rocket.feet()[0][1]          # How far a foot is pressed into the ground.
+    # At rest each spring carries half the weight: k x compression = weight / 2.
+    assert compression == pytest.approx(weight / 2 / LEG_STIFFNESS, abs=0.02)
+
+
+def test_a_hard_touchdown_breaks_a_leg():
+    rocket = fly(placed_rocket(3.0), 0.0, 0.0, seconds=10)     # Hits at about 7.7 m/s.
+    assert rocket.status == "crashed"
+    assert "leg" in rocket.crash_reason
+
+
+def test_a_slightly_tilted_touchdown_rocks_onto_both_feet():
+    rocket = fly(placed_rocket(0.3, angle_degrees=8), 0.0, 0.0, seconds=10)
+    assert rocket.status == "landed"
+    assert abs(rocket.tilt()) < math.radians(2)               # The legs set it upright.
+
+
+def test_a_badly_tilted_touchdown_tips_over():
+    # Past about 23 degrees (atan(2.2 / 5.2)) the center of mass is beyond the lower foot.
+    rocket = fly(placed_rocket(0.3, angle_degrees=40), 0.0, 0.0, seconds=10)
+    assert rocket.status == "crashed"
+    assert "body" in rocket.crash_reason
+
+
+def test_friction_stops_a_sideways_touchdown():
+    rocket = fly(placed_rocket(0.3, vx=2.0), 0.0, 0.0, seconds=10)
+    assert rocket.status == "landed"
+    assert rocket.vx == pytest.approx(0.0, abs=0.6)
+
+
+def test_a_calm_landing_away_from_the_pad_is_off_pad():
+    rocket = fly(placed_rocket(0.3, x=-10.0), 0.0, 0.0, seconds=10)
+    assert rocket.status == "off_pad"
 
 
 # --- Determinism --------------------------------------------------------------

@@ -22,6 +22,7 @@ ROCKET_COLOR = (240, 180, 50)
 FLAME_COLOR = (255, 120, 30)
 NOZZLE_COLOR = (40, 45, 50)
 LEG_COLOR = (60, 70, 75)
+CONTACT_COLOR = (30, 150, 90)            # A foot pad that is on the ground.
 TEXT_COLOR = (30, 40, 45)
 WRECK_COLOR = (110, 60, 50)
 LANDED_COLOR = (20, 120, 80)
@@ -178,7 +179,7 @@ def main():
         # in the rocket's own coordinates, so to_world() tilts the legs along with the body.
         bottom = -ROCKET_HEIGHT / 2
         strut_width = max(2, round(0.25 * camera.scale))
-        for side, foot in zip((-1, 1), rocket.feet()):           # -1 = left leg, +1 = right leg.
+        for side, foot, touching in zip((-1, 1), rocket.feet(), rocket.foot_contacts):
             hip = rocket.to_world(side * ROCKET_WIDTH / 2, bottom + LEG_HIP_HEIGHT)
             brace_top = rocket.to_world(side * ROCKET_WIDTH / 2, bottom + LEG_BRACE_HEIGHT)
             middle = ((hip[0] + foot[0]) / 2, (hip[1] + foot[1]) / 2)
@@ -187,7 +188,8 @@ def main():
             pygame.draw.line(screen, LEG_COLOR, camera.to_screen(brace_top),
                              camera.to_screen(middle), max(1, strut_width // 2))
             pygame.draw.line(screen, LEG_COLOR, camera.to_screen(hip), camera.to_screen(foot), strut_width)
-            pygame.draw.line(screen, LEG_COLOR, camera.to_screen(pad_left), camera.to_screen(pad_right), strut_width)
+            pad_color = CONTACT_COLOR if touching else LEG_COLOR
+            pygame.draw.line(screen, pad_color, camera.to_screen(pad_left), camera.to_screen(pad_right), strut_width)
 
         # The body is now a rotated polygon from its four corners.
         body_color = WRECK_COLOR if rocket.status == "crashed" else ROCKET_COLOR
@@ -207,6 +209,8 @@ def main():
                  f"throttle  {rocket.throttle:5.0%}   (W / S)",
                  f"fuel      {rocket.fuel:5.1f} kg",
                  f"max TWR   {MAX_THRUST / weight:5.2f}"]
+        left, right = ("down" if touching else "up" for touching in rocket.foot_contacts)
+        lines.append(f"legs      {left} / {right}")
         if rocket.impact_speed is not None:
             lines.append(f"impact    {rocket.impact_speed:5.1f} m/s")
         for i, text in enumerate(lines):
