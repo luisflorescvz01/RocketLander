@@ -5,6 +5,9 @@
 __pycache__/
 *.pyc
 
+# pytest remembers which tests failed last time here. It's local to each computer.
+.pytest_cache/
+
 # Trained models and training logs get large. We will keep them out of git.
 runs/
 *.pt
