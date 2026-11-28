@@ -5,9 +5,7 @@ import math
 import pygame
 
 from physics import (
-    DT, GRAVITY, ROCKET_WIDTH, ROCKET_HEIGHT,
-    DRY_MASS, MAX_THRUST, MAX_FUEL_FLOW, MAX_GIMBAL, GIMBAL_RATE, NOZZLE_ARM,
-    SAFE_SPEED, SAFE_ANGLE, PAD_X, PAD_WIDTH,
+    DT, GRAVITY, ROCKET_WIDTH, ROCKET_HEIGHT, DRY_MASS, MAX_THRUST, PAD_X, PAD_WIDTH,
     Rocket,
 )
 
@@ -110,6 +108,7 @@ def main():
 
     rocket = Rocket()    # All of the rocket's state in one object.
     camera = Camera()    # Turns world meters into screen pixels, frame by frame.
+    throttle = 0.0       # The keyboard's throttle setting, nudged by W / S.
 
     running = True
     while running:
@@ -120,72 +119,21 @@ def main():
             elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
                 running = False
             elif event.type == pygame.KEYDOWN and event.key == pygame.K_r:
-                rocket = Rocket()                     # Restart = a brand-new rocket.
+                rocket = Rocket()                     # Restart = a brand-new rocket...
+                throttle = 0.0                        # ...with the engine set to off.
 
         # Held keys. Events say "W was pressed"; get_pressed() says "W is down now".
         keys = pygame.key.get_pressed()
         if keys[pygame.K_w]:
-            rocket.throttle = rocket.throttle + THROTTLE_RATE * DT
+            throttle = throttle + THROTTLE_RATE * DT
         if keys[pygame.K_s]:
-            rocket.throttle = rocket.throttle - THROTTLE_RATE * DT
-        rocket.throttle = min(1.0, max(0.0, rocket.throttle))  # Keep it between 0 and 1.
+            throttle = throttle - THROTTLE_RATE * DT
+        throttle = min(1.0, max(0.0, throttle))       # Keep it between 0 and 1.
+        # A/D aim the nozzle: -1 = full left, +1 = full right, 0 (neither key) = center.
+        gimbal_command = keys[pygame.K_d] - keys[pygame.K_a]
 
-        # A/D choose where the nozzle should point; letting go means "center".
-        target = (keys[pygame.K_d] - keys[pygame.K_a]) * MAX_GIMBAL
-        # The nozzle can't jump there: it moves at most GIMBAL_RATE * DT per frame.
-        step = GIMBAL_RATE * DT
-        rocket.gimbal = rocket.gimbal + min(step, max(-step, target - rocket.gimbal))
-
-        # 2. Update the game state: one physics step of DT seconds.
-        if rocket.status != "flying":
-            rocket.throttle = 0.0                     # Engine off once down.
-        else:
-            # The engine only pushes while there is fuel left.
-            thrust = rocket.throttle * MAX_THRUST if rocket.fuel > 0 else 0.0
-            mass = DRY_MASS + rocket.fuel             # Lighter as fuel burns.
-            rocket.fuel = max(0.0, rocket.fuel - rocket.throttle * MAX_FUEL_FLOW * DT)
-
-            # Thrust points along the body, turned by the nozzle's swivel.
-            direction = rocket.angle - rocket.gimbal
-            ax = thrust * math.sin(direction) / mass              # Sideways part.
-            ay = thrust * math.cos(direction) / mass - GRAVITY    # Upward part, minus gravity.
-
-            # Off-center thrust twists the rocket. Turning has its own a = F / m:
-            # angular acceleration = torque / moment of inertia.
-            torque = thrust * math.sin(rocket.gimbal) * NOZZLE_ARM
-            inertia = mass * (ROCKET_HEIGHT ** 2 + ROCKET_WIDTH ** 2) / 12
-            rocket.spin = rocket.spin + torque / inertia * DT     # Torque changes the spin...
-            rocket.angle = rocket.angle + rocket.spin * DT        # ...and spin changes the angle.
-
-            rocket.vx = rocket.vx + ax * DT            # Now something pushes sideways.
-            rocket.vy = rocket.vy + ay * DT            # Acceleration changes the velocity...
-            rocket.y = rocket.y + rocket.vy * DT       # ...and velocity changes the position.
-            rocket.x = rocket.x + rocket.vx * DT
-            rocket.time = rocket.time + DT
-
-            # Touchdown happens at the lowest corner, not the middle of the bottom.
-            lowest = min(corner[1] for corner in rocket.corners())
-            if lowest <= 0:           # A corner reached (or passed) the ground this step.
-                # Total speed combines both directions (Pythagoras): √(vx² + vy²).
-                rocket.impact_speed = math.hypot(rocket.vx, rocket.vy)
-                rocket.y = rocket.y - lowest          # Lift it so it rests on the ground.
-                rocket.vy = 0.0
-                rocket.vx = 0.0       # The ground stops the sideways drift too.
-                rocket.spin = 0.0     # ...and the spin.
-                # The rules that decide the outcome. Every rule must pass to land.
-                reasons = []
-                if rocket.impact_speed >= SAFE_SPEED:
-                    reasons.append("too fast")
-                if abs(rocket.tilt()) > SAFE_ANGLE:
-                    reasons.append("too tilted")
-                if reasons:
-                    rocket.status = "crashed"
-                    rocket.crash_reason = " and ".join(reasons)
-                # Only a safe touchdown gets asked "was it on the pad?".
-                elif abs(rocket.pad_offset()) > PAD_WIDTH / 2:
-                    rocket.status = "off_pad"
-                else:
-                    rocket.status = "landed"
+        # 2. Update the game state: one physics step, all done in physics.py.
+        rocket.step(throttle, gimbal_command)
 
         # 3. Draw: paint everything again, back to front.
         camera.follow(rocket)                         # Choose this frame's view first.
