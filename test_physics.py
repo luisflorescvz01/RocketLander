@@ -29,16 +29,20 @@ def fly(rocket, throttle, gimbal_command, seconds):
 
 # --- Gravity ------------------------------------------------------------------
 
-def test_free_fall_from_40_m_takes_about_2_86_seconds():
-    rocket = fly(still_rocket(), 0.0, 0.0, seconds=10)
+def test_free_fall_time_matches_the_exact_formula():
+    rocket = still_rocket()
+    drop = rocket.clearance()          # How far the lowest point (the feet) has to fall.
+    fly(rocket, 0.0, 0.0, seconds=10)
     # Exact physics: t = sqrt(2h / g). Our 1/60 s steps land within one step of it.
-    assert rocket.time == pytest.approx(math.sqrt(2 * 40 / GRAVITY), abs=DT)
+    assert rocket.time == pytest.approx(math.sqrt(2 * drop / GRAVITY), abs=DT)
 
 
-def test_free_fall_from_40_m_hits_at_about_28_m_per_s():
-    rocket = fly(still_rocket(), 0.0, 0.0, seconds=10)
+def test_free_fall_impact_speed_matches_the_exact_formula():
+    rocket = still_rocket()
+    drop = rocket.clearance()
+    fly(rocket, 0.0, 0.0, seconds=10)
     # Exact physics: v = sqrt(2gh).
-    assert rocket.impact_speed == pytest.approx(math.sqrt(2 * GRAVITY * 40), abs=0.2)
+    assert rocket.impact_speed == pytest.approx(math.sqrt(2 * GRAVITY * drop), abs=0.2)
 
 
 def test_one_step_of_free_fall_adds_gravity_times_dt_to_the_fall_speed():
@@ -131,6 +135,25 @@ def test_engine_off_means_no_steering():
     rocket = fly(still_rocket(), 0.0, 1.0, seconds=0.5)
     assert rocket.gimbal > 0           # The nozzle still swivels...
     assert rocket.spin == 0.0          # ...but with no thrust there is no torque.
+
+
+# --- Legs ---------------------------------------------------------------------
+
+def test_upright_feet_are_symmetric_and_below_the_body():
+    rocket = still_rocket()
+    (left_x, left_y), (right_x, right_y) = rocket.feet()
+    assert left_x == pytest.approx(-right_x)               # Mirror images around x = 0.
+    assert left_y == pytest.approx(right_y)                # Same height when upright.
+    lowest_corner = min(y for _, y in rocket.corners())
+    assert left_y < lowest_corner                          # The feet touch the ground first.
+    assert rocket.clearance() == pytest.approx(left_y)
+
+
+def test_tilting_right_swings_the_stance_to_the_left():
+    rocket = still_rocket()
+    rocket.angle = math.radians(10)                        # Nose leans right...
+    assert rocket.stance_center()[0] < 0                   # ...so the feet swing left.
+    assert rocket.pad_offset() == pytest.approx(rocket.stance_center()[0])
 
 
 # --- Determinism --------------------------------------------------------------

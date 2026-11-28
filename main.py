@@ -5,8 +5,8 @@ import math
 import pygame
 
 from physics import (
-    DT, GRAVITY, ROCKET_WIDTH, ROCKET_HEIGHT, DRY_MASS, MAX_THRUST, PAD_X, PAD_WIDTH,
-    Rocket,
+    DT, GRAVITY, ROCKET_WIDTH, ROCKET_HEIGHT, LEG_SPAN, LEG_DROP,
+    DRY_MASS, MAX_THRUST, PAD_X, PAD_WIDTH, Rocket,
 )
 
 # --- Settings -------------------------------------------------------------
@@ -21,6 +21,7 @@ GROUND_COLOR = (90, 100, 105)
 ROCKET_COLOR = (240, 180, 50)
 FLAME_COLOR = (255, 120, 30)
 NOZZLE_COLOR = (40, 45, 50)
+LEG_COLOR = (60, 70, 75)
 TEXT_COLOR = (30, 40, 45)
 WRECK_COLOR = (110, 60, 50)
 LANDED_COLOR = (20, 120, 80)
@@ -31,6 +32,10 @@ PAD_STRIPE_COLOR = (240, 180, 50)
 
 PIXELS_PER_METER = 10        # Closest camera zoom: 1 m is drawn as 10 pixels.
 THROTTLE_RATE = 0.5          # How fast W/S move the throttle, per second.
+
+# Where the legs attach to the body, measured up from its bottom edge (drawing only).
+LEG_HIP_HEIGHT = 1.6         # The main strut's top joint, m.
+LEG_BRACE_HEIGHT = 0.2       # The brace's top joint, m.
 
 
 class Camera:
@@ -152,7 +157,7 @@ def main():
 
         # The nozzle and flame start at the bottom center of the rocket and point
         # opposite to the thrust: the exhaust goes one way, the rocket is pushed the other.
-        nozzle = rocket.to_world(0, -ROCKET_HEIGHT / 2)
+        nozzle = rocket.base()
         direction = rocket.angle - rocket.gimbal
         exhaust = (-math.sin(direction), -math.cos(direction))   # Unit vector, world meters.
         across = (exhaust[1], -exhaust[0])                       # Perpendicular to it.
@@ -167,7 +172,22 @@ def main():
             pygame.draw.polygon(screen, FLAME_COLOR, [
                 along(0, -ROCKET_WIDTH / 3), along(0, ROCKET_WIDTH / 3), along(flame_length)])
         # The nozzle: a short dark line that shows which way the engine is swiveled.
-        pygame.draw.line(screen, NOZZLE_COLOR, along(0), along(1.0), 4)
+        pygame.draw.line(screen, NOZZLE_COLOR, along(0), along(0.8), 4)
+
+        # The legs, drawn before the body so they seem to attach behind it. Every point is
+        # in the rocket's own coordinates, so to_world() tilts the legs along with the body.
+        bottom = -ROCKET_HEIGHT / 2
+        strut_width = max(2, round(0.25 * camera.scale))
+        for side, foot in zip((-1, 1), rocket.feet()):           # -1 = left leg, +1 = right leg.
+            hip = rocket.to_world(side * ROCKET_WIDTH / 2, bottom + LEG_HIP_HEIGHT)
+            brace_top = rocket.to_world(side * ROCKET_WIDTH / 2, bottom + LEG_BRACE_HEIGHT)
+            middle = ((hip[0] + foot[0]) / 2, (hip[1] + foot[1]) / 2)
+            pad_left = rocket.to_world(side * LEG_SPAN - 0.4, bottom - LEG_DROP)
+            pad_right = rocket.to_world(side * LEG_SPAN + 0.4, bottom - LEG_DROP)
+            pygame.draw.line(screen, LEG_COLOR, camera.to_screen(brace_top),
+                             camera.to_screen(middle), max(1, strut_width // 2))
+            pygame.draw.line(screen, LEG_COLOR, camera.to_screen(hip), camera.to_screen(foot), strut_width)
+            pygame.draw.line(screen, LEG_COLOR, camera.to_screen(pad_left), camera.to_screen(pad_right), strut_width)
 
         # The body is now a rotated polygon from its four corners.
         body_color = WRECK_COLOR if rocket.status == "crashed" else ROCKET_COLOR
@@ -175,7 +195,7 @@ def main():
 
         # On-screen readout so we can check the physics.
         weight = (DRY_MASS + rocket.fuel) * GRAVITY
-        clearance = max(0.0, min(corner[1] for corner in rocket.corners()))
+        clearance = max(0.0, rocket.clearance())
         lines = [f"time      {rocket.time:5.2f} s",
                  f"height    {clearance:5.1f} m",
                  f"speed     {rocket.vy:+6.1f} m/s",

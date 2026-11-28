@@ -11,6 +11,8 @@ START_X = -15.0              # Starting sideways position, m (0 = screen center,
 START_VX = 2.0               # Starting sideways velocity, m/s (+ = moving right).
 ROCKET_WIDTH = 2.0           # m
 ROCKET_HEIGHT = 8.0          # m
+LEG_SPAN = 2.2               # How far each foot is out from the center line, m.
+LEG_DROP = 1.2               # How far the feet reach below the bottom of the body, m.
 
 # --- Engine ----------------------------------------------------------------
 DRY_MASS = 80.0              # Mass of the empty rocket, kg.
@@ -65,15 +67,29 @@ class Rocket:
         """The middle of the rocket's bottom edge, where the engine is, in world coordinates."""
         return self.to_world(0, -ROCKET_HEIGHT / 2)
 
+    def feet(self):
+        """The two feet in world coordinates: [left, right]."""
+        foot_y = -ROCKET_HEIGHT / 2 - LEG_DROP
+        return [self.to_world(-LEG_SPAN, foot_y), self.to_world(LEG_SPAN, foot_y)]
+
+    def stance_center(self):
+        """The point midway between the two feet, in world coordinates."""
+        (left_x, left_y), (right_x, right_y) = self.feet()
+        return ((left_x + right_x) / 2, (left_y + right_y) / 2)
+
     def pad_offset(self):
-        """How far the base is from the pad's center, m (negative = left of it)."""
-        return self.base()[0] - PAD_X
+        """How far the middle of the stance is from the pad's center, m (negative = left)."""
+        return self.stance_center()[0] - PAD_X
 
     def corners(self):
         """The body's four corners in world coordinates, clockwise from bottom-left."""
         w, h = ROCKET_WIDTH / 2, ROCKET_HEIGHT / 2
         return [self.to_world(-w, -h), self.to_world(-w, h),
                 self.to_world(w, h), self.to_world(w, -h)]
+
+    def clearance(self):
+        """Height of the lowest point (a foot or a body corner) above the ground, m."""
+        return min(y for _, y in self.feet() + self.corners())
 
     def step(self, throttle, gimbal_command):
         """Advance the rocket by one time step of DT seconds.
@@ -124,9 +140,9 @@ class Rocket:
         self.x = self.x + self.vx * dt
         self.time = self.time + dt
 
-        # Touchdown happens at the lowest corner, not the middle of the bottom.
-        lowest = min(corner[1] for corner in self.corners())
-        if lowest <= 0:           # A corner reached (or passed) the ground this step.
+        # Touchdown happens at the lowest point: usually a foot, a body corner if badly tilted.
+        lowest = self.clearance()
+        if lowest <= 0:           # Something reached (or passed) the ground this step.
             # Total speed combines both directions (Pythagoras): √(vx² + vy²).
             self.impact_speed = math.hypot(self.vx, self.vy)
             self.y = self.y - lowest              # Lift it so it rests on the ground.
