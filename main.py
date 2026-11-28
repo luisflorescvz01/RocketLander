@@ -10,6 +10,8 @@ FPS = 60                     # Frames per second we aim for.
 GROUND_Y = HEIGHT - 60       # Pixel row where the ground starts (y grows downward).
 
 SKY_COLOR = (225, 235, 240)  # Colors are (red, green, blue), each 0-255.
+GRID_COLOR = (205, 218, 224)
+GRID_LABEL_COLOR = (120, 135, 142)
 GROUND_COLOR = (90, 100, 105)
 ROCKET_COLOR = (240, 180, 50)
 FLAME_COLOR = (255, 120, 30)
@@ -127,6 +129,39 @@ class Camera:
         """Convert a world point (x, y) in meters to a pixel position."""
         return (self.to_screen_x(point[0]), self.to_screen_y(point[1]))
 
+    def to_world_x(self, x_px):
+        """The opposite of to_screen_x: which world x (m) is at this pixel column."""
+        return self.center_x + (x_px - WIDTH / 2) / self.scale
+
+
+def grid_spacing(scale, min_pixels=50):
+    """The smallest round distance (1, 2, 5, 10, 20, 50, ... m) at least min_pixels apart."""
+    spacing = 1
+    while True:
+        for step in (1, 2, 5):
+            if step * spacing * scale >= min_pixels:
+                return step * spacing
+        spacing = spacing * 10
+
+
+def draw_grid(screen, camera, font):
+    """Light lines at round distances, placed in world meters so they move with the camera."""
+    spacing = grid_spacing(camera.scale)
+    # Vertical lines: every multiple of spacing between the window's left and right edges.
+    first = math.floor(camera.to_world_x(0) / spacing)
+    last = math.ceil(camera.to_world_x(WIDTH) / spacing)
+    for i in range(first, last + 1):
+        x = camera.to_screen_x(i * spacing)
+        pygame.draw.line(screen, GRID_COLOR, (x, 0), (x, GROUND_Y))
+    # Horizontal lines: every multiple of spacing above the ground, labeled on the right.
+    height = spacing
+    while camera.to_screen_y(height) > 0:
+        y = camera.to_screen_y(height)
+        pygame.draw.line(screen, GRID_COLOR, (0, y), (WIDTH, y))
+        label = font.render(f"{height} m", True, GRID_LABEL_COLOR)
+        screen.blit(label, label.get_rect(bottomright=(WIDTH - 6, y - 2)))
+        height = height + spacing
+
 
 def main():
     pygame.init()                                     # Start pygame's modules.
@@ -135,6 +170,7 @@ def main():
     clock = pygame.time.Clock()                       # Keeps the loop at a steady speed.
     font = pygame.font.SysFont("consolas", 18)        # For the on-screen numbers.
     big_font = pygame.font.SysFont("consolas", 48, bold=True)  # For LANDED / CRASHED.
+    small_font = pygame.font.SysFont("consolas", 13)           # For grid labels.
 
     rocket = Rocket()    # All of the rocket's state in one object.
     camera = Camera()    # Turns world meters into screen pixels, frame by frame.
@@ -218,6 +254,7 @@ def main():
         # 3. Draw: paint everything again, back to front.
         camera.follow(rocket)                         # Choose this frame's view first.
         screen.fill(SKY_COLOR)
+        draw_grid(screen, camera, small_font)         # Behind everything else.
         pygame.draw.rect(screen, GROUND_COLOR, (0, GROUND_Y, WIDTH, HEIGHT - GROUND_Y))
 
         # The pad: a dark slab on the ground with yellow stripes, one per 2 m.
