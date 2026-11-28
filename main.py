@@ -30,7 +30,7 @@ START_X = -15.0              # Starting sideways position, m (0 = screen center,
 START_VX = 2.0               # Starting sideways velocity, m/s (+ = moving right).
 ROCKET_WIDTH = 2.0           # m
 ROCKET_HEIGHT = 8.0          # m
-PIXELS_PER_METER = 10        # Screen scale: 1 m is drawn as 10 pixels.
+PIXELS_PER_METER = 10        # Closest camera zoom: 1 m is drawn as 10 pixels.
 
 # --- Engine ----------------------------------------------------------------
 DRY_MASS = 80.0              # Mass of the empty rocket, kg.
@@ -97,19 +97,35 @@ class Rocket:
                 self.to_world(w, h), self.to_world(w, -h)]
 
 
-def to_screen_x(x_m):
-    """Convert a sideways position in meters (0 = middle) to a pixel column."""
-    return WIDTH / 2 + x_m * PIXELS_PER_METER
+class Camera:
+    """Decides which part of the world is on screen, and at what zoom."""
 
+    def __init__(self):
+        self.center_x = 0.0               # World x shown in the middle of the window, m.
+        self.scale = PIXELS_PER_METER     # Pixels per meter.
 
-def to_screen_y(height_m):
-    """Convert a height in meters (up = +) to a pixel row (down = +)."""
-    return GROUND_Y - height_m * PIXELS_PER_METER
+    def follow(self, rocket):
+        """Frame the pad and the rocket (with a margin), zooming out only when needed."""
+        margin = ROCKET_HEIGHT
+        left = min(PAD_X - PAD_WIDTH / 2, rocket.x - margin)
+        right = max(PAD_X + PAD_WIDTH / 2, rocket.x + margin)
+        top = rocket.y + margin                    # Highest point that must be visible, m.
+        fit_width = WIDTH * 0.9 / (right - left)   # Zoom that fits the width, keeping 5% each side.
+        fit_height = (GROUND_Y - 20) / top         # Zoom that fits the height, 20 px from the top.
+        self.scale = min(PIXELS_PER_METER, fit_width, fit_height)
+        self.center_x = (left + right) / 2
 
+    def to_screen_x(self, x_m):
+        """Convert a sideways position in meters to a pixel column."""
+        return WIDTH / 2 + (x_m - self.center_x) * self.scale
 
-def to_screen(point):
-    """Convert a world point (x, y) in meters to a pixel position."""
-    return (to_screen_x(point[0]), to_screen_y(point[1]))
+    def to_screen_y(self, height_m):
+        """Convert a height in meters (up = +) to a pixel row (down = +)."""
+        return GROUND_Y - height_m * self.scale
+
+    def to_screen(self, point):
+        """Convert a world point (x, y) in meters to a pixel position."""
+        return (self.to_screen_x(point[0]), self.to_screen_y(point[1]))
 
 
 def main():
@@ -121,6 +137,7 @@ def main():
     big_font = pygame.font.SysFont("consolas", 48, bold=True)  # For LANDED / CRASHED.
 
     rocket = Rocket()    # All of the rocket's state in one object.
+    camera = Camera()    # Turns world meters into screen pixels, frame by frame.
 
     running = True
     while running:
@@ -199,12 +216,13 @@ def main():
                     rocket.status = "landed"
 
         # 3. Draw: paint everything again, back to front.
+        camera.follow(rocket)                         # Choose this frame's view first.
         screen.fill(SKY_COLOR)
         pygame.draw.rect(screen, GROUND_COLOR, (0, GROUND_Y, WIDTH, HEIGHT - GROUND_Y))
 
         # The pad: a dark slab on the ground with yellow stripes, one per 2 m.
-        pad_left = to_screen_x(PAD_X - PAD_WIDTH / 2)
-        pad_width_px = PAD_WIDTH * PIXELS_PER_METER
+        pad_left = camera.to_screen_x(PAD_X - PAD_WIDTH / 2)
+        pad_width_px = PAD_WIDTH * camera.scale
         pygame.draw.rect(screen, PAD_COLOR, (pad_left, GROUND_Y, pad_width_px, 8))
         stripes = int(PAD_WIDTH / 2)
         for i in range(stripes):
@@ -220,7 +238,7 @@ def main():
 
         def along(distance, side=0.0):
             """A point `distance` m down the exhaust from the nozzle, `side` m across."""
-            return to_screen((nozzle[0] + exhaust[0] * distance + across[0] * side,
+            return camera.to_screen((nozzle[0] + exhaust[0] * distance + across[0] * side,
                               nozzle[1] + exhaust[1] * distance + across[1] * side))
 
         if rocket.throttle > 0 and rocket.fuel > 0 and rocket.status == "flying":
@@ -232,7 +250,7 @@ def main():
 
         # The body is now a rotated polygon from its four corners.
         body_color = WRECK_COLOR if rocket.status == "crashed" else ROCKET_COLOR
-        pygame.draw.polygon(screen, body_color, [to_screen(p) for p in rocket.corners()])
+        pygame.draw.polygon(screen, body_color, [camera.to_screen(p) for p in rocket.corners()])
 
         # On-screen readout so we can check the physics.
         weight = (DRY_MASS + rocket.fuel) * GRAVITY
