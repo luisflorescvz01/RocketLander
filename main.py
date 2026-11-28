@@ -182,9 +182,15 @@ def main():
         for side, foot, touching in zip((-1, 1), rocket.feet(), rocket.foot_contacts):
             hip = rocket.to_world(side * ROCKET_WIDTH / 2, bottom + LEG_HIP_HEIGHT)
             brace_top = rocket.to_world(side * ROCKET_WIDTH / 2, bottom + LEG_BRACE_HEIGHT)
-            middle = ((hip[0] + foot[0]) / 2, (hip[1] + foot[1]) / 2)
             pad_left = rocket.to_world(side * LEG_SPAN - 0.4, bottom - LEG_DROP)
             pad_right = rocket.to_world(side * LEG_SPAN + 0.4, bottom - LEG_DROP)
+            # A foot pressed into the ground (a squashed or broken leg) is drawn on the
+            # ground instead, so the leg looks compressed rather than stuck through it.
+            lift = max(0.0, -foot[1])
+            foot = (foot[0], foot[1] + lift)
+            pad_left = (pad_left[0], pad_left[1] + lift)
+            pad_right = (pad_right[0], pad_right[1] + lift)
+            middle = ((hip[0] + foot[0]) / 2, (hip[1] + foot[1]) / 2)
             pygame.draw.line(screen, LEG_COLOR, camera.to_screen(brace_top),
                              camera.to_screen(middle), max(1, strut_width // 2))
             pygame.draw.line(screen, LEG_COLOR, camera.to_screen(hip), camera.to_screen(foot), strut_width)
@@ -223,16 +229,19 @@ def main():
                             "off_pad": ("LANDED OFF PAD", OFF_PAD_COLOR),
                             "crashed": ("CRASHED", CRASHED_COLOR)}[rocket.status]
             message = big_font.render(title, True, color)
-            hint_text = "Press R to restart"
+            # Up to two short lines under the title: why, then how to try again.
+            hints = []
             if rocket.status == "off_pad":
                 missed_by = abs(rocket.pad_offset()) - PAD_WIDTH / 2
-                hint_text = f"Missed the pad by {missed_by:.1f} m · {hint_text}"
-            elif rocket.crash_reason:                              # E.g. "Too fast · Press R..."
-                hint_text = f"{rocket.crash_reason.capitalize()} · {hint_text}"
-            hint = font.render(hint_text, True, TEXT_COLOR)
+                hints.append(f"Missed the pad by {missed_by:.1f} m")
+            elif rocket.crash_reason:
+                hints.append(rocket.crash_reason.capitalize())
+            hints.append("Press R to restart")
             # get_rect(center=...) positions an image by its middle instead of its corner.
             screen.blit(message, message.get_rect(center=(WIDTH / 2, HEIGHT / 3)))
-            screen.blit(hint, hint.get_rect(center=(WIDTH / 2, HEIGHT / 3 + 45)))
+            for i, text in enumerate(hints):
+                hint = font.render(text, True, TEXT_COLOR)
+                screen.blit(hint, hint.get_rect(center=(WIDTH / 2, HEIGHT / 3 + 45 + i * 24)))
 
         pygame.display.flip()                         # Show the finished frame.
 

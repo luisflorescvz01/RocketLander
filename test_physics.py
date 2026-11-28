@@ -225,6 +225,55 @@ def test_a_calm_landing_away_from_the_pad_is_off_pad():
     assert rocket.status == "off_pad"
 
 
+# --- After a crash --------------------------------------------------------------
+
+def crash_then_watch(rocket, seconds):
+    """Fly until the crash, then keep stepping for `seconds`.
+
+    Returns how deep the hull (not the feet: broken legs may collapse) ever sank, m.
+    """
+    fly(rocket, 0.0, 0.0, seconds=10)
+    assert rocket.status == "crashed"
+    deepest = 0.0
+    for _ in range(round(seconds / DT)):
+        rocket.step(1.0, 1.0)                   # Full controls: a wreck must ignore them.
+        deepest = min(deepest, min(y for _, y in rocket.corners()))
+    return deepest
+
+
+def test_a_wreck_keeps_rolling_over_after_the_crash():
+    # Sliding in sideways breaks a leg while still fairly upright...
+    rocket = fly(placed_rocket(2.0, vx=-8.0, angle_degrees=-20), 0.0, 0.0, seconds=10)
+    assert "leg" in rocket.crash_reason
+    assert abs(rocket.tilt()) < math.radians(30)
+    deepest = crash_then_watch(rocket, seconds=4)
+    # ...and then the wreck, still simulated, rolls over onto its side...
+    assert abs(rocket.tilt()) > math.radians(60)
+    # ...where it rests on its hull, which must not sink into the ground...
+    assert deepest > -0.3
+    # ...and the leg it fell onto is reported as touching the ground.
+    assert any(rocket.foot_contacts)
+
+
+def test_a_wreck_ignores_the_controls():
+    rocket = placed_rocket(3.0)                 # A hard drop breaks a leg.
+    fly(rocket, 0.0, 0.0, seconds=10)
+    fuel, gimbal = rocket.fuel, rocket.gimbal
+    crash_then_watch(rocket, seconds=1)
+    assert rocket.throttle == 0.0
+    assert rocket.fuel == fuel                  # Nothing burned...
+    assert rocket.gimbal == gimbal              # ...and the nozzle didn't move.
+
+
+def test_a_wreck_comes_to_rest_on_the_ground_without_sinking_through():
+    rocket = still_rocket()                     # Free fall from the start: a 27 m/s impact.
+    deepest = crash_then_watch(rocket, seconds=8)
+    assert rocket.status == "crashed"           # Still a crash, however it ends up lying.
+    assert math.hypot(rocket.vx, rocket.vy) < 0.1
+    assert abs(rocket.spin) < 0.1
+    assert deepest > -0.3                       # The hull's springs sink a little, never through.
+
+
 # --- Determinism --------------------------------------------------------------
 
 def test_same_inputs_always_give_the_same_flight():

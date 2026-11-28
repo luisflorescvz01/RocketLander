@@ -28,6 +28,9 @@ LEG_STIFFNESS = 5200.0       # Spring: N of push per m the foot is pressed into 
 LEG_DAMPING = 670.0          # Damper: N of push per m/s the foot moves into the ground.
 FRICTION = 0.85              # A foot's sideways grip can be at most this fraction of its push.
 GRIP = 310.0                 # N of sideways resistance per m/s a loaded foot slides.
+# After a crash the hull itself can hit the ground: much stiffer than a leg, like metal.
+BODY_STIFFNESS = 24000.0     # N of push per m a body corner is pressed into the ground.
+BODY_DAMPING = 1400.0        # N of push per m/s a body corner moves into the ground.
 
 # --- Rules -----------------------------------------------------------------
 SAFE_SPEED = 5.0             # A foot touching down faster than this breaks its leg, m/s.
@@ -122,7 +125,8 @@ class Rocket:
 
         # Aim the nozzle, then run several small physics steps that together last DT.
         # Small steps keep stiff things (like the landing-leg springs) stable.
-        target = gimbal_command * MAX_GIMBAL
+        # Once the flight is over the controls do nothing: the nozzle stays where it is.
+        target = gimbal_command * MAX_GIMBAL if self.status == "flying" else self.gimbal
         for _ in range(SUBSTEPS):
             self._substep(target, DT / SUBSTEPS)
 
@@ -133,8 +137,10 @@ class Rocket:
         self.gimbal = self.gimbal + min(max_move, max(-max_move, gimbal_target - self.gimbal))
 
         if self.status != "flying":
-            self.throttle = 0.0                       # Engine off once down.
-            return
+            self.throttle = 0.0                       # Engine off once the flight is over.
+        if self.status in ("landed", "off_pad"):
+            return                                    # A landed rocket rests where it is.
+        # Still flying, or a crashed wreck that keeps tumbling, sliding and settling.
 
         # The engine only pushes while there is fuel left.
         thrust = self.throttle * MAX_THRUST if self.fuel > 0 else 0.0
@@ -164,26 +170,36 @@ class Rocket:
         self.x = self.x + self.vx * dt
         self.time = self.time + dt
 
-        self._judge(dt)
+        if self.status == "flying":
+            self._judge(dt)
+        else:
+            # A wreck's outcome can't change, but keep track of which feet touch the ground.
+            self.foot_contacts = [y <= 0 for _, y in self.feet()]
 
     def _ground_forces(self):
-        """The ground's push on each foot below it: (sideways force, upward force, torque)."""
+        """The ground's push on each contact point below it: (sideways, upward, torque)."""
+        # Each contact point has its own spring stiffness and damping.
+        contacts = [(foot, LEG_STIFFNESS, LEG_DAMPING) for foot in self.feet()]
+        if self.status == "crashed":
+            # A wreck can lie on its side or nose, so the hull's corners touch the ground too.
+            contacts += [(corner, BODY_STIFFNESS, BODY_DAMPING) for corner in self.corners()]
+
         total_x = total_y = total_torque = 0.0
-        for foot in self.feet():
-            depth = -foot[1]                      # How far the foot is pressed into the ground.
+        for point, stiffness, damping in contacts:
+            depth = -point[1]                     # How far it is pressed into the ground.
             if depth <= 0:
                 continue                          # Not touching: no force.
-            foot_vx, foot_vy = self.point_velocity(foot)
+            point_vx, point_vy = self.point_velocity(point)
             # Spring (deeper = harder) plus damper (moving down faster = harder).
             # The ground can push but never pull, so the push is never below zero.
-            push = max(0.0, depth * LEG_STIFFNESS - foot_vy * LEG_DAMPING)
+            push = max(0.0, depth * stiffness - point_vy * damping)
             # Friction resists sliding, but can't grip harder than FRICTION x push.
             limit = FRICTION * push
-            friction = min(limit, max(-limit, -foot_vx * GRIP))
+            friction = min(limit, max(-limit, -point_vx * GRIP))
             total_x = total_x + friction
             total_y = total_y + push
             # A push away from the center twists the rocket, like the off-center thrust.
-            dx, dy = foot[0] - self.x, foot[1] - self.y
+            dx, dy = point[0] - self.x, point[1] - self.y
             total_torque = total_torque + dy * friction - dx * push
         return total_x, total_y, total_torque
 
@@ -215,8 +231,7 @@ class Rocket:
             self.status = "off_pad" if abs(self.pad_offset()) > PAD_WIDTH / 2 else "landed"
 
     def _crash(self, reason):
-        """End the flight as a crash. For now everything stops where it is."""
+        """End the flight as a crash. The physics keeps running: the wreck tumbles and settles."""
         self.status = "crashed"
         self.crash_reason = reason
-        self.y = self.y - min(0.0, self.clearance())  # Lift it so nothing is below the ground.
-        self.vx = self.vy = self.spin = 0.0
+        self.throttle = 0.0
