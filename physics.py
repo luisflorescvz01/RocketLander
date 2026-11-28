@@ -4,6 +4,7 @@ import math
 
 # --- Physics (all in meters, seconds, and "up is positive") ---------------
 DT = 1 / 60                  # Time step: seconds simulated per step (one frame at 60 FPS).
+SUBSTEPS = 4                 # Each step is split into this many smaller physics steps.
 GRAVITY = 9.81               # Downward acceleration, m/s².
 START_HEIGHT = 40.0          # Rocket's starting height above ground, m.
 START_X = -15.0              # Starting sideways position, m (0 = screen center, + = right).
@@ -84,10 +85,17 @@ class Rocket:
         self.throttle = min(1.0, max(0.0, throttle))
         gimbal_command = min(1.0, max(-1.0, gimbal_command))
 
-        # The nozzle can't jump to the commanded angle: it moves at most GIMBAL_RATE * DT.
+        # Aim the nozzle, then run several small physics steps that together last DT.
+        # Small steps keep stiff things (like the landing-leg springs) stable.
         target = gimbal_command * MAX_GIMBAL
-        step = GIMBAL_RATE * DT
-        self.gimbal = self.gimbal + min(step, max(-step, target - self.gimbal))
+        for _ in range(SUBSTEPS):
+            self._substep(target, DT / SUBSTEPS)
+
+    def _substep(self, gimbal_target, dt):
+        """One small physics step of dt seconds. Only step() should call this."""
+        # The nozzle can't jump to the commanded angle: it moves at most GIMBAL_RATE * dt.
+        max_move = GIMBAL_RATE * dt
+        self.gimbal = self.gimbal + min(max_move, max(-max_move, gimbal_target - self.gimbal))
 
         if self.status != "flying":
             self.throttle = 0.0                       # Engine off once down.
@@ -96,7 +104,7 @@ class Rocket:
         # The engine only pushes while there is fuel left.
         thrust = self.throttle * MAX_THRUST if self.fuel > 0 else 0.0
         mass = DRY_MASS + self.fuel                   # Lighter as fuel burns.
-        self.fuel = max(0.0, self.fuel - self.throttle * MAX_FUEL_FLOW * DT)
+        self.fuel = max(0.0, self.fuel - self.throttle * MAX_FUEL_FLOW * dt)
 
         # Thrust points along the body, turned by the nozzle's swivel.
         direction = self.angle - self.gimbal
@@ -107,14 +115,14 @@ class Rocket:
         # angular acceleration = torque / moment of inertia.
         torque = thrust * math.sin(self.gimbal) * NOZZLE_ARM
         inertia = mass * (ROCKET_HEIGHT ** 2 + ROCKET_WIDTH ** 2) / 12
-        self.spin = self.spin + torque / inertia * DT     # Torque changes the spin...
-        self.angle = self.angle + self.spin * DT          # ...and spin changes the angle.
+        self.spin = self.spin + torque / inertia * dt     # Torque changes the spin...
+        self.angle = self.angle + self.spin * dt          # ...and spin changes the angle.
 
-        self.vx = self.vx + ax * DT            # Acceleration changes the velocity...
-        self.vy = self.vy + ay * DT
-        self.y = self.y + self.vy * DT         # ...and velocity changes the position.
-        self.x = self.x + self.vx * DT
-        self.time = self.time + DT
+        self.vx = self.vx + ax * dt            # Acceleration changes the velocity...
+        self.vy = self.vy + ay * dt
+        self.y = self.y + self.vy * dt         # ...and velocity changes the position.
+        self.x = self.x + self.vx * dt
+        self.time = self.time + dt
 
         # Touchdown happens at the lowest corner, not the middle of the bottom.
         lowest = min(corner[1] for corner in self.corners())
