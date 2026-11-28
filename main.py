@@ -5,8 +5,8 @@ import math
 import pygame
 
 from physics import (
-    DT, GRAVITY, ROCKET_WIDTH, ROCKET_HEIGHT, DRY_MASS, MAX_THRUST, PAD_X, PAD_WIDTH,
-    Rocket,
+    DT, GRAVITY, ROCKET_WIDTH, ROCKET_HEIGHT, LEG_SPAN, LEG_DROP,
+    DRY_MASS, MAX_THRUST, PAD_X, PAD_WIDTH, Rocket,
 )
 
 # --- Settings -------------------------------------------------------------
@@ -21,6 +21,8 @@ GROUND_COLOR = (90, 100, 105)
 ROCKET_COLOR = (240, 180, 50)
 FLAME_COLOR = (255, 120, 30)
 NOZZLE_COLOR = (40, 45, 50)
+LEG_COLOR = (60, 70, 75)
+CONTACT_COLOR = (30, 150, 90)            # A foot pad that is on the ground.
 TEXT_COLOR = (30, 40, 45)
 WRECK_COLOR = (110, 60, 50)
 LANDED_COLOR = (20, 120, 80)
@@ -31,6 +33,10 @@ PAD_STRIPE_COLOR = (240, 180, 50)
 
 PIXELS_PER_METER = 10        # Closest camera zoom: 1 m is drawn as 10 pixels.
 THROTTLE_RATE = 0.5          # How fast W/S move the throttle, per second.
+
+# Where the legs attach to the body, measured up from its bottom edge (drawing only).
+LEG_HIP_HEIGHT = 1.6         # The main strut's top joint, m.
+LEG_BRACE_HEIGHT = 0.2       # The brace's top joint, m.
 
 
 class Camera:
@@ -152,7 +158,7 @@ def main():
 
         # The nozzle and flame start at the bottom center of the rocket and point
         # opposite to the thrust: the exhaust goes one way, the rocket is pushed the other.
-        nozzle = rocket.to_world(0, -ROCKET_HEIGHT / 2)
+        nozzle = rocket.base()
         direction = rocket.angle - rocket.gimbal
         exhaust = (-math.sin(direction), -math.cos(direction))   # Unit vector, world meters.
         across = (exhaust[1], -exhaust[0])                       # Perpendicular to it.
@@ -167,7 +173,29 @@ def main():
             pygame.draw.polygon(screen, FLAME_COLOR, [
                 along(0, -ROCKET_WIDTH / 3), along(0, ROCKET_WIDTH / 3), along(flame_length)])
         # The nozzle: a short dark line that shows which way the engine is swiveled.
-        pygame.draw.line(screen, NOZZLE_COLOR, along(0), along(1.0), 4)
+        pygame.draw.line(screen, NOZZLE_COLOR, along(0), along(0.8), 4)
+
+        # The legs, drawn before the body so they seem to attach behind it. Every point is
+        # in the rocket's own coordinates, so to_world() tilts the legs along with the body.
+        bottom = -ROCKET_HEIGHT / 2
+        strut_width = max(2, round(0.25 * camera.scale))
+        for side, foot, touching in zip((-1, 1), rocket.feet(), rocket.foot_contacts):
+            hip = rocket.to_world(side * ROCKET_WIDTH / 2, bottom + LEG_HIP_HEIGHT)
+            brace_top = rocket.to_world(side * ROCKET_WIDTH / 2, bottom + LEG_BRACE_HEIGHT)
+            pad_left = rocket.to_world(side * LEG_SPAN - 0.4, bottom - LEG_DROP)
+            pad_right = rocket.to_world(side * LEG_SPAN + 0.4, bottom - LEG_DROP)
+            # A foot pressed into the ground (a squashed or broken leg) is drawn on the
+            # ground instead, so the leg looks compressed rather than stuck through it.
+            lift = max(0.0, -foot[1])
+            foot = (foot[0], foot[1] + lift)
+            pad_left = (pad_left[0], pad_left[1] + lift)
+            pad_right = (pad_right[0], pad_right[1] + lift)
+            middle = ((hip[0] + foot[0]) / 2, (hip[1] + foot[1]) / 2)
+            pygame.draw.line(screen, LEG_COLOR, camera.to_screen(brace_top),
+                             camera.to_screen(middle), max(1, strut_width // 2))
+            pygame.draw.line(screen, LEG_COLOR, camera.to_screen(hip), camera.to_screen(foot), strut_width)
+            pad_color = CONTACT_COLOR if touching else LEG_COLOR
+            pygame.draw.line(screen, pad_color, camera.to_screen(pad_left), camera.to_screen(pad_right), strut_width)
 
         # The body is now a rotated polygon from its four corners.
         body_color = WRECK_COLOR if rocket.status == "crashed" else ROCKET_COLOR
@@ -175,7 +203,7 @@ def main():
 
         # On-screen readout so we can check the physics.
         weight = (DRY_MASS + rocket.fuel) * GRAVITY
-        clearance = max(0.0, min(corner[1] for corner in rocket.corners()))
+        clearance = max(0.0, rocket.clearance())
         lines = [f"time      {rocket.time:5.2f} s",
                  f"height    {clearance:5.1f} m",
                  f"speed     {rocket.vy:+6.1f} m/s",
@@ -187,6 +215,8 @@ def main():
                  f"throttle  {rocket.throttle:5.0%}   (W / S)",
                  f"fuel      {rocket.fuel:5.1f} kg",
                  f"max TWR   {MAX_THRUST / weight:5.2f}"]
+        left, right = ("down" if touching else "up" for touching in rocket.foot_contacts)
+        lines.append(f"legs      {left} / {right}")
         if rocket.impact_speed is not None:
             lines.append(f"impact    {rocket.impact_speed:5.1f} m/s")
         for i, text in enumerate(lines):
@@ -199,16 +229,19 @@ def main():
                             "off_pad": ("LANDED OFF PAD", OFF_PAD_COLOR),
                             "crashed": ("CRASHED", CRASHED_COLOR)}[rocket.status]
             message = big_font.render(title, True, color)
-            hint_text = "Press R to restart"
+            # Up to two short lines under the title: why, then how to try again.
+            hints = []
             if rocket.status == "off_pad":
                 missed_by = abs(rocket.pad_offset()) - PAD_WIDTH / 2
-                hint_text = f"Missed the pad by {missed_by:.1f} m · {hint_text}"
-            elif rocket.crash_reason:                              # E.g. "Too fast · Press R..."
-                hint_text = f"{rocket.crash_reason.capitalize()} · {hint_text}"
-            hint = font.render(hint_text, True, TEXT_COLOR)
+                hints.append(f"Missed the pad by {missed_by:.1f} m")
+            elif rocket.crash_reason:
+                hints.append(rocket.crash_reason.capitalize())
+            hints.append("Press R to restart")
             # get_rect(center=...) positions an image by its middle instead of its corner.
             screen.blit(message, message.get_rect(center=(WIDTH / 2, HEIGHT / 3)))
-            screen.blit(hint, hint.get_rect(center=(WIDTH / 2, HEIGHT / 3 + 45)))
+            for i, text in enumerate(hints):
+                hint = font.render(text, True, TEXT_COLOR)
+                screen.blit(hint, hint.get_rect(center=(WIDTH / 2, HEIGHT / 3 + 45 + i * 24)))
 
         pygame.display.flip()                         # Show the finished frame.
 

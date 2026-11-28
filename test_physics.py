@@ -6,7 +6,7 @@ import pytest
 
 from physics import (
     DT, GRAVITY, DRY_MASS, START_FUEL, MAX_THRUST, MAX_FUEL_FLOW,
-    MAX_GIMBAL, GIMBAL_RATE, Rocket,
+    MAX_GIMBAL, GIMBAL_RATE, LEG_STIFFNESS, SETTLE_TIME, Rocket,
 )
 
 
@@ -15,6 +15,16 @@ def still_rocket():
     rocket = Rocket()
     rocket.x = 0.0
     rocket.vx = 0.0
+    return rocket
+
+
+def placed_rocket(height, x=0.0, vx=0.0, angle_degrees=0.0):
+    """A rocket whose lowest point is `height` m above the ground, not moving down yet."""
+    rocket = still_rocket()
+    rocket.x = x
+    rocket.vx = vx
+    rocket.angle = math.radians(angle_degrees)
+    rocket.y = rocket.y - (rocket.clearance() - height)
     return rocket
 
 
@@ -29,16 +39,20 @@ def fly(rocket, throttle, gimbal_command, seconds):
 
 # --- Gravity ------------------------------------------------------------------
 
-def test_free_fall_from_40_m_takes_about_2_86_seconds():
-    rocket = fly(still_rocket(), 0.0, 0.0, seconds=10)
+def test_free_fall_time_matches_the_exact_formula():
+    rocket = still_rocket()
+    drop = rocket.clearance()          # How far the lowest point (the feet) has to fall.
+    fly(rocket, 0.0, 0.0, seconds=10)
     # Exact physics: t = sqrt(2h / g). Our 1/60 s steps land within one step of it.
-    assert rocket.time == pytest.approx(math.sqrt(2 * 40 / GRAVITY), abs=DT)
+    assert rocket.time == pytest.approx(math.sqrt(2 * drop / GRAVITY), abs=DT)
 
 
-def test_free_fall_from_40_m_hits_at_about_28_m_per_s():
-    rocket = fly(still_rocket(), 0.0, 0.0, seconds=10)
+def test_free_fall_impact_speed_matches_the_exact_formula():
+    rocket = still_rocket()
+    drop = rocket.clearance()
+    fly(rocket, 0.0, 0.0, seconds=10)
     # Exact physics: v = sqrt(2gh).
-    assert rocket.impact_speed == pytest.approx(math.sqrt(2 * GRAVITY * 40), abs=0.2)
+    assert rocket.impact_speed == pytest.approx(math.sqrt(2 * GRAVITY * drop), abs=0.2)
 
 
 def test_one_step_of_free_fall_adds_gravity_times_dt_to_the_fall_speed():
@@ -131,6 +145,133 @@ def test_engine_off_means_no_steering():
     rocket = fly(still_rocket(), 0.0, 1.0, seconds=0.5)
     assert rocket.gimbal > 0           # The nozzle still swivels...
     assert rocket.spin == 0.0          # ...but with no thrust there is no torque.
+
+
+# --- Legs ---------------------------------------------------------------------
+
+def test_upright_feet_are_symmetric_and_below_the_body():
+    rocket = still_rocket()
+    (left_x, left_y), (right_x, right_y) = rocket.feet()
+    assert left_x == pytest.approx(-right_x)               # Mirror images around x = 0.
+    assert left_y == pytest.approx(right_y)                # Same height when upright.
+    lowest_corner = min(y for _, y in rocket.corners())
+    assert left_y < lowest_corner                          # The feet touch the ground first.
+    assert rocket.clearance() == pytest.approx(left_y)
+
+
+def test_tilting_right_swings_the_stance_to_the_left():
+    rocket = still_rocket()
+    rocket.angle = math.radians(10)                        # Nose leans right...
+    assert rocket.stance_center()[0] < 0                   # ...so the feet swing left.
+    assert rocket.pad_offset() == pytest.approx(rocket.stance_center()[0])
+
+
+# --- Suspension and landing ---------------------------------------------------
+
+def test_a_gentle_drop_on_the_pad_settles_and_lands():
+    rocket = fly(placed_rocket(0.3), 0.0, 0.0, seconds=10)
+    assert rocket.status == "landed"
+
+
+def test_landing_waits_for_a_calm_moment_on_both_feet():
+    rocket = placed_rocket(0.3)
+    both_down_at = None
+    for _ in range(round(10 / DT)):        # At most 10 s, so a rocket that never settles
+        if rocket.status != "flying":      # fails this test instead of hanging it forever.
+            break
+        rocket.step(0.0, 0.0)
+        if both_down_at is None and all(rocket.foot_contacts):
+            both_down_at = rocket.time
+    assert rocket.status == "landed"
+    # Not landed the instant the feet touch, but only after SETTLE_TIME of calm.
+    assert rocket.time - both_down_at >= SETTLE_TIME - DT
+
+
+def test_the_legs_hold_the_weight_with_a_small_compression():
+    rocket = fly(placed_rocket(0.3), 0.0, 0.0, seconds=10)
+    weight = (DRY_MASS + rocket.fuel) * GRAVITY
+    compression = -rocket.feet()[0][1]          # How far a foot is pressed into the ground.
+    # At rest each spring carries half the weight: k x compression = weight / 2.
+    assert compression == pytest.approx(weight / 2 / LEG_STIFFNESS, abs=0.02)
+
+
+def test_a_hard_touchdown_breaks_a_leg():
+    rocket = fly(placed_rocket(3.0), 0.0, 0.0, seconds=10)     # Hits at about 7.7 m/s.
+    assert rocket.status == "crashed"
+    assert "leg" in rocket.crash_reason
+
+
+def test_a_slightly_tilted_touchdown_rocks_onto_both_feet():
+    rocket = fly(placed_rocket(0.3, angle_degrees=8), 0.0, 0.0, seconds=10)
+    assert rocket.status == "landed"
+    assert abs(rocket.tilt()) < math.radians(2)               # The legs set it upright.
+
+
+def test_a_badly_tilted_touchdown_tips_over():
+    # Past about 23 degrees (atan(2.2 / 5.2)) the center of mass is beyond the lower foot.
+    rocket = fly(placed_rocket(0.3, angle_degrees=40), 0.0, 0.0, seconds=10)
+    assert rocket.status == "crashed"
+    assert "body" in rocket.crash_reason
+
+
+def test_friction_stops_a_sideways_touchdown():
+    rocket = fly(placed_rocket(0.3, vx=2.0), 0.0, 0.0, seconds=10)
+    assert rocket.status == "landed"
+    assert rocket.vx == pytest.approx(0.0, abs=0.6)
+
+
+def test_a_calm_landing_away_from_the_pad_is_off_pad():
+    rocket = fly(placed_rocket(0.3, x=-10.0), 0.0, 0.0, seconds=10)
+    assert rocket.status == "off_pad"
+
+
+# --- After a crash --------------------------------------------------------------
+
+def crash_then_watch(rocket, seconds):
+    """Fly until the crash, then keep stepping for `seconds`.
+
+    Returns how deep the hull (not the feet: broken legs may collapse) ever sank, m.
+    """
+    fly(rocket, 0.0, 0.0, seconds=10)
+    assert rocket.status == "crashed"
+    deepest = 0.0
+    for _ in range(round(seconds / DT)):
+        rocket.step(1.0, 1.0)                   # Full controls: a wreck must ignore them.
+        deepest = min(deepest, min(y for _, y in rocket.corners()))
+    return deepest
+
+
+def test_a_wreck_keeps_rolling_over_after_the_crash():
+    # Sliding in sideways breaks a leg while still fairly upright...
+    rocket = fly(placed_rocket(2.0, vx=-8.0, angle_degrees=-20), 0.0, 0.0, seconds=10)
+    assert "leg" in rocket.crash_reason
+    assert abs(rocket.tilt()) < math.radians(30)
+    deepest = crash_then_watch(rocket, seconds=4)
+    # ...and then the wreck, still simulated, rolls over onto its side...
+    assert abs(rocket.tilt()) > math.radians(60)
+    # ...where it rests on its hull, which must not sink into the ground...
+    assert deepest > -0.3
+    # ...and the leg it fell onto is reported as touching the ground.
+    assert any(rocket.foot_contacts)
+
+
+def test_a_wreck_ignores_the_controls():
+    rocket = placed_rocket(3.0)                 # A hard drop breaks a leg.
+    fly(rocket, 0.0, 0.0, seconds=10)
+    fuel, gimbal = rocket.fuel, rocket.gimbal
+    crash_then_watch(rocket, seconds=1)
+    assert rocket.throttle == 0.0
+    assert rocket.fuel == fuel                  # Nothing burned...
+    assert rocket.gimbal == gimbal              # ...and the nozzle didn't move.
+
+
+def test_a_wreck_comes_to_rest_on_the_ground_without_sinking_through():
+    rocket = still_rocket()                     # Free fall from the start: a 27 m/s impact.
+    deepest = crash_then_watch(rocket, seconds=8)
+    assert rocket.status == "crashed"           # Still a crash, however it ends up lying.
+    assert math.hypot(rocket.vx, rocket.vy) < 0.1
+    assert abs(rocket.spin) < 0.1
+    assert deepest > -0.3                       # The hull's springs sink a little, never through.
 
 
 # --- Determinism --------------------------------------------------------------
